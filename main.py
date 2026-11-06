@@ -2,7 +2,7 @@
 #Aidan Lee - 30246077 - Tut 03
 #Jude Whiteside...
 #Youssif...
-#Gavin...
+#Gavin Kyle - 30196910 - Tut 04
 #imports
 from aegis_game.stub import *
 import heapq
@@ -16,6 +16,7 @@ def think() -> None:
     if get_round_number() == 1:
         set_max_energy()
         move(Direction.CENTER)
+        send_status()
         return
 
     # Fetch the cell at the agent's current location.
@@ -27,9 +28,12 @@ def think() -> None:
     # If a survivor is present, save it and end the turn.
     if isinstance(cell.top_layer, Survivor):
         save()
+        send_status()
         return
 
-   
+    agent_coordination()
+
+
 #pathfinding and information
 def find_path(agent_loc, rubble_loc):
      #initialize start location, survivor location, discovery heap, and past dict
@@ -304,9 +308,196 @@ def energy_management(agent_loc, dest_loc) -> tuple:
     return "go_anyway", direct
 ### end Energy Management
 
+MAX_ENERGY_HELD = 1000 #The engine caps energy here, so recharging can go past an agent's starting energy
+move_costs = {} #move_costs[(x, y)] = move cost of that cell, or None if an agent can't stand there
+goal_costs = {} #goal_costs[(x, y)][(x, y)] = (energy, steps) of the cheapest walk from a cell to that goal
+
+def send_status() -> None:
+    """Tell the team where this agent is and its energy. Call this AFTER acting, once per round."""
+    my_loc = get_location()
+    send_message(str(my_loc.x) + "," + str(my_loc.y) + "," + str(get_energy_level()), [])
+
+def costs_to_goal(dest_loc) -> dict:
+    """Cost of walking to dest_loc from every cell that can reach it.
+
+    Comparing agents takes many route lengths per round, and a turn over 1 second kills
+    the agent. Move costs never change, so one search per goal is kept for the whole game.
+    Agents still walk using find_path, this only ranks them.
+    """
+    goal = (dest_loc.x, dest_loc.y)
+    if goal in goal_costs:
+        return goal_costs[goal]
+
+    costs = {goal: (0, 0)}
+    discovered_heap = [(0, 0, dest_loc.x, dest_loc.y)]
+    while discovered_heap:
+        current_record = heapq.heappop(discovered_heap)
+        current_key = (current_record[2], current_record[3])
+        if (current_record[0], current_record[1]) > costs[current_key]:
+            continue
+
+        #Searching backwards from the goal: a neighbour walking onto this cell pays this cell's cost
+        current_node = Location(current_record[2], current_record[3])
+        new_cost = (current_record[0] + get_cell_info_at(current_node).move_cost, current_record[1] + 1)
+        for direction in Direction:
+            neighbour = current_node.add(direction)
+            key = (neighbour.x, neighbour.y)
+            if key not in move_costs:
+                move_costs[key] = None
+                if on_map(neighbour) and not get_cell_info_at(neighbour).is_killer_cell():
+                    move_costs[key] = get_cell_info_at(neighbour).move_cost
+            if move_costs[key] is not None and (key not in costs or new_cost < costs[key]):
+                costs[key] = new_cost
+                heapq.heappush(discovered_heap, (new_cost[0], new_cost[1], key[0], key[1]))
+
+    goal_costs[goal] = costs
+    return costs
+
+def plan_trip(agent_loc, energy, dest_loc, task_energy):
+    """How an agent gets to dest_loc holding enough energy to do its task there.
+
+    Returns (rounds, charger), or None if it can't be done:
+      charger is None    walk straight to dest_loc
+      otherwise          go to that charger and recharge until the rest is affordable
+    The safety margin is also the cost of a save(), same as in energy_management.
+    """
+    agent_key = (agent_loc.x, agent_loc.y)
+    dest_costs = costs_to_goal(dest_loc)
+    if agent_key not in dest_costs:
+        return None
+
+    direct = dest_costs[agent_key]
+    if energy >= direct[0] + task_energy + SAFETY_MARGIN:
+        return (direct[1], None)
+
+    best = None
+    for charger in get_charging_cells():
+        charger_key = (charger.x, charger.y)
+        charger_costs = costs_to_goal(charger)
+        if agent_key not in charger_costs or charger_key not in dest_costs:
+            continue
+        to_charger = charger_costs[agent_key]
+        from_charger = dest_costs[charger_key]
+        if to_charger[0] + SAFETY_MARGIN > energy: #We would die on the way to this charger
+            continue
+        needed_after = from_charger[0] + task_energy + SAFETY_MARGIN
+        if needed_after > MAX_ENERGY_HELD:
+            continue
+        deficit = needed_after - (energy - to_charger[0])
+        recharges = max(0, math.ceil(deficit / RECHARGE_AMOUNT))
+        rounds = to_charger[1] + recharges + from_charger[1]
+        #Ties go to the lowest coordinates so that every agent picks the same one
+        if best is None or (rounds, charger.x, charger.y) < best[0]:
+            best = ((rounds, charger.x, charger.y), charger)
+
+    if best is None:
+        return None
+    return (best[0][0], best[1])
+
 # big function that evaluates available agents, gives them the necessary tasks (task_id function), say assignments and reassign
 def agent_coordination():
-    pass
+    """Work out the team's assignments for this round, then carry out this agent's part.
+
+    Agents don't share memory, so each one gets the team's positions and energy from the
+    messages sent last round, and runs this same plan on that same information. The plan
+    comes out identical on every agent, and re-planning each round is the reassigning.
+    """
+    global target_loc
+
+    my_id = get_id()
+    my_loc = get_location()
+
+    #Everyone alive sends a status every round, so a silent agent is a dead agent.
+    team = {my_id: (my_loc, get_energy_level())}
+    for message in read_messages(get_round_number()):
+        status = message.message.split(",")
+        if int(status[2]) > 0:
+            team[message.sender_id] = (Location(int(status[0]), int(status[1])), int(status[2]))
+
+    #A task is (dest_loc, agents_required, task_energy), task_id should return a list of these.
+    #Until it does, use the top layer of each survivor cell, which every agent can see.
+    tasks = task_id()
+    if tasks is None:
+        tasks = []
+        for survivor_loc in get_survs():
+            survivor_cell = get_cell_info_at(survivor_loc)
+            if survivor_cell.is_killer_cell():
+                continue
+            if isinstance(survivor_cell.top_layer, Rubble):
+                tasks.append((survivor_loc, survivor_cell.top_layer.agents_required, survivor_cell.top_layer.energy_required))
+            else:
+                tasks.append((survivor_loc, 1, 0))
+
+    def able_agents(pool, task):
+        """Agents in pool who can do this task, soonest first, as (rounds, agent id)."""
+        able = []
+        for agent_id in pool:
+            trip = plan_trip(team[agent_id][0], team[agent_id][1], task[0], task[2])
+            if trip is not None:
+                able.append((trip[0], agent_id))
+        able.sort()
+        return able
+
+    available = list(team)
+    available.sort()
+    assignments = {}
+    unfinished = list(tasks)
+
+    #Keep giving out the task that can be finished soonest to the agents closest to it.
+    while available and unfinished:
+        best = None
+        for task in unfinished:
+            able = able_agents(available, task)
+            if len(able) >= task[1]:
+                group = able[:task[1]]
+                rank = (group[-1][0], task[0].x, task[0].y)
+                if best is None or rank < best[0]:
+                    best = (rank, task, group)
+        if best is None:
+            break
+        for member in best[2]:
+            assignments[member[1]] = best[1]
+            available.remove(member[1])
+        unfinished.remove(best[1])
+
+    #Not enough agents are free for what's left: send the spare ones ahead to wait there,
+    #unless the team could never gather enough agents (some may be walled off from it).
+    for task in unfinished:
+        if len(able_agents(list(team), task)) >= task[1]:
+            for member in able_agents(available, task)[:task[1]]:
+                assignments[member[1]] = task
+                available.remove(member[1])
+
+    #Carry out this agent's part. Waiting on a charger is free energy.
+    my_task = assignments.get(my_id)
+    trip = None
+    if my_task is not None:
+        trip = plan_trip(my_loc, get_energy_level(), my_task[0], my_task[2])
+
+    if trip is None:
+        if my_loc in get_charging_cells():
+            recharge()
+    elif trip[1] is not None:
+        if my_loc == trip[1]:
+            recharge()
+        else:
+            target_loc = trip[1]
+            agent_action()
+    else:
+        target_loc = my_task[0]
+        if agent_action() == "arrived":
+            #Failed digs still cost energy, so only dig once enough agents are here to remove it.
+            ready = []
+            for agent_id in assignments:
+                if assignments[agent_id] == my_task and team[agent_id][0] == my_loc and team[agent_id][1] >= my_task[2] + SAFETY_MARGIN:
+                    ready.append(agent_id)
+            ready.sort()
+            if len(ready) >= my_task[1] and my_id in ready[:my_task[1]]:
+                dig()
+            elif my_loc in get_charging_cells():
+                recharge()
+
+    send_status()
 
 # execute agent_coordination task, tasks available will be to move, wait, dig, charge, or save
 def agent_action():
