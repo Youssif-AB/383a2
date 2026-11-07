@@ -518,10 +518,16 @@ def agent_action():
         return "arrived"
  
     #path[0] is the cell right next to us; direction_to turns it into a Direction.
-    move(my_loc.direction_to(path[0]))
-    return "moved"
-###
-    pass
+    next_step = path[0]
+    direction = my_loc.direction_to(next_step)
+
+    if direction:
+        move(direction)
+        return "moved"
+    else:
+        move(Direction.CENTER)
+        return "moved"
+
 
 # used to scan the rubble and maintain requirements and unfinished tasks
 def task_id():
