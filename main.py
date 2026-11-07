@@ -1,13 +1,15 @@
 #Fall 2026 - CPSC 329 - Date:
 #Aidan Lee - 30246077 - Tut 03
 #Jude Whiteside - 30241082 - Tut 02
-#Youssif...
+#Youssif Abdelaziz - 30208726 - Tut 03
 #Gavin Kyle - 30196910 - Tut 04
 #imports
 from aegis_game.stub import *
 import heapq
 import math
 
+last_status = []
+previous_assignments = {}
 
 def think() -> None:
     log("Thinking")
@@ -332,9 +334,11 @@ goal_costs = {}  # goal_costs[(x, y)][(x, y)] = (energy, steps) of the cheapest 
 
 
 def send_status() -> None:
+    global last_status
     """Tell the team where this agent is and its energy. Call this AFTER acting, once per round."""
     my_loc = get_location()
     send_message(str(my_loc.x) + "," + str(my_loc.y) + "," + str(get_energy_level()), [])
+    last_status = [(my_loc.x, my_loc.y), get_energy_level()]
 
 
 def costs_to_goal(dest_loc) -> dict:
@@ -477,7 +481,7 @@ def agent_coordination():
     my_loc = get_location()
 
     # Everyone alive sends a status every round, so a silent agent is a dead agent.
-    team = {my_id: (my_loc, get_energy_level())}
+    team = {my_id: (Location(last_status[0][0], last_status[0][1]), last_status[1])}
     for message in read_messages(get_round_number()):
         status = message.message.split(",")
         if int(status[2]) > 0:
@@ -489,7 +493,9 @@ def agent_coordination():
 
 
     def able_agents(pool, task):
+        
         """Agents in pool who can do this task, soonest first, as (rounds, agent id)."""
+        
         able = []
         for agent_id in pool:
             trip = plan_trip(team[agent_id][0], team[agent_id][1], task[0], task[2])
@@ -498,10 +504,44 @@ def agent_coordination():
         able.sort()
         return able
 
+    global previous_assignments
     available = list(team)
     available.sort()
+
+
     assignments = {}
     unfinished = list(tasks)
+
+    removed_tasks = []
+    for task in unfinished:
+
+        agents = []
+        for agent in previous_assignments.keys():
+            if previous_assignments[agent] == task:
+                agents.append(agent)
+
+        valid = True
+
+        if len(agents) != task[1]:
+            valid = False
+        
+        for agent in agents:
+            if agent not in team:
+                valid = False
+            else:
+                if plan_trip(team[agent][0], team[agent][1], task[0], task[2]) == None:
+                    valid = False
+
+        if valid:
+            removed_tasks.append(task)
+
+            for agent in agents:
+                available.remove(agent)
+                assignments[agent] = (task[0], task[1], task[2])
+    
+    for task in removed_tasks:
+        unfinished.remove(task)
+
 
     # Keep giving out the task that can be finished soonest to the agents closest to it.
     while available and unfinished:
@@ -520,6 +560,7 @@ def agent_coordination():
             available.remove(member[1])
         unfinished.remove(best[1])
 
+
     # Not enough agents are free for what's left: send the spare ones ahead to wait there,
     # unless the team could never gather enough agents (some may be walled off from it).
     for task in unfinished:
@@ -528,6 +569,9 @@ def agent_coordination():
                 assignments[member[1]] = task
                 available.remove(member[1])
 
+    previous_assignments = assignments.copy()
+
+    log(assignments)
     # Carry out this agent's part. Waiting on a charger is free energy.
     my_task = assignments.get(my_id)
     trip = None
@@ -599,5 +643,4 @@ def agent_action(dest_loc):
     else:
         move(Direction.CENTER)
         return "moved"
-
 
