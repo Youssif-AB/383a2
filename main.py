@@ -1,7 +1,7 @@
-#Fall 2026 - CPSC 329 - Date:
+#Fall 2026 - CPSC 383 - Date:
 #Aidan Lee - 30246077 - Tut 03
 #Jude Whiteside - 30241082 - Tut 02
-#Youssif Abdelaziz - 30208726 - Tut 03
+#Youssif...
 #Gavin Kyle - 30196910 - Tut 04
 #imports
 from aegis_game.stub import *
@@ -10,6 +10,8 @@ import math
 
 last_status = []
 previous_assignments = {}
+loc_scan = []
+cooldown_round = -1
 
 def think() -> None:
     log("Thinking")
@@ -504,17 +506,30 @@ def agent_coordination():
         able.sort()
         return able
 
+    
+
+    # check previous assignments
     global previous_assignments
+    global cooldown_round
     available = list(team)
     available.sort()
 
+    locations = get_survs()
+
+    global loc_scan
+
+    #remove leader for availability
+    available.remove(min(team))
 
     assignments = {}
     unfinished = list(tasks)
 
+
     removed_tasks = []
+    #look at unfinished tasks
     for task in unfinished:
 
+        #get each agent already given a task
         agents = []
         for agent in previous_assignments.keys():
             if previous_assignments[agent] == task:
@@ -522,16 +537,21 @@ def agent_coordination():
 
         valid = True
 
+        #check if the task agent amount is valid
         if len(agents) != task[1]:
             valid = False
-        
+
+        #making sure agents are in team, available, and can make the trip
         for agent in agents:
             if agent not in team:
+                valid = False
+            if agent not in available:
                 valid = False
             else:
                 if plan_trip(team[agent][0], team[agent][1], task[0], task[2]) == None:
                     valid = False
 
+        #if its valid, make the assignemnt
         if valid:
             removed_tasks.append(task)
 
@@ -563,15 +583,41 @@ def agent_coordination():
 
     # Not enough agents are free for what's left: send the spare ones ahead to wait there,
     # unless the team could never gather enough agents (some may be walled off from it).
+    temp_team = team.copy()
+    del temp_team[min(temp_team)]
     for task in unfinished:
-        if len(able_agents(list(team), task)) >= task[1]:
+        if len(able_agents(list(temp_team), task)) >= task[1]:
             for member in able_agents(available, task)[:task[1]]:
                 assignments[member[1]] = task
                 available.remove(member[1])
 
     previous_assignments = assignments.copy()
+    smallest_id = min(team)
 
-    log(assignments)
+    # doing a drone scan first get the leader
+    if (get_id() == smallest_id):
+
+        # waiting five rounds for drone scan and notify status
+        if cooldown_round != -1:
+            if (get_round_number() <= cooldown_round + 5):
+                send_status()
+                return
+        
+        # go through existing location
+        for location in locations:
+
+            #if the location isnt already in our drone scan catalogue
+            if location not in loc_scan:
+                # append it and drone scan it, send status and get the round number to calculate cool down
+                loc_scan.append(location)
+                drone_scan(location)
+                send_status()
+                cooldown_round = get_round_number()
+                return
+
+
+        
+
     # Carry out this agent's part. Waiting on a charger is free energy.
     my_task = assignments.get(my_id)
     trip = None
