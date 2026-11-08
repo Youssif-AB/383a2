@@ -1,7 +1,7 @@
 #Fall 2026 - CPSC 383 - Date:
 #Aidan Lee - 30246077 - Tut 03
 #Jude Whiteside - 30241082 - Tut 02
-#Youssif...
+#Youssif Abdelaziz - 30208726 - Tut 03
 #Gavin Kyle - 30196910 - Tut 04
 #imports
 from aegis_game.stub import *
@@ -12,6 +12,7 @@ last_status = []
 previous_assignments = {}
 loc_scan = []
 cooldown_round = -1
+loc_scan_info = {}
 
 def think() -> None:
     log("Thinking")
@@ -593,6 +594,7 @@ def agent_coordination():
 
     previous_assignments = assignments.copy()
     smallest_id = min(team)
+    global loc_scan_info
 
     # doing a drone scan first get the leader
     if (get_id() == smallest_id):
@@ -600,6 +602,10 @@ def agent_coordination():
         # waiting five rounds for drone scan and notify status
         if cooldown_round != -1:
             if (get_round_number() <= cooldown_round + 5):
+                #storing scanning results
+                if loc_scan != []:
+                    if get_round_number() == cooldown_round + 1:
+                        loc_scan_info[loc_scan[len(loc_scan) - 1]] = get_cell_info_at(loc_scan[len(loc_scan) - 1])
                 send_status()
                 return
         
