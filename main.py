@@ -1,4 +1,4 @@
-#Fall 2026 - CPSC 383 - Date:
+#Fall 2026 - CPSC 338 - Date:
 #Aidan Lee - 30246077 - Tut 03
 #Jude Whiteside - 30241082 - Tut 02
 #Youssif Abdelaziz - 30208726 - Tut 03
@@ -337,10 +337,20 @@ goal_costs = {}  # goal_costs[(x, y)][(x, y)] = (energy, steps) of the cheapest 
 
 
 def send_status() -> None:
-    global last_status
-    """Tell the team where this agent is and its energy. Call this AFTER acting, once per round."""
+    global last_status, loc_scan, loc_scan_info
+
     my_loc = get_location()
-    send_message(str(my_loc.x) + "," + str(my_loc.y) + "," + str(get_energy_level()), [])
+    #formating message
+    message_parts = [str(my_loc.x), str(my_loc.y), str(get_energy_level())]
+
+    #if tile scanned, append to message
+    if loc_scan and len(loc_scan_info) >0:
+        latest_loc = loc_scan[-1]
+        if latest_loc in loc_scan_info:
+            agents_req, energy_req = loc_scan_info[latest_loc]
+            message_parts.extend([str(latest_loc.x), str(latest_loc.y), str(agents_req), str(energy_req)])
+    """Tell the team where this agent is and its energy. Call this AFTER acting, once per round."""
+    send_message(",".join(message_parts), [])
     last_status = [(my_loc.x, my_loc.y), get_energy_level()]
 
 
@@ -434,7 +444,7 @@ def task_id():
     Scans visible survivor tiles then filters out already cleared rubble and saved survivors,
     returns list of active tasks (dest_loc, agents_required, task_energy)
     """
-    global completed_survivors, cleared_rubble
+    global completed_survivors, cleared_rubble, loc_scan_info
 
     tasks = []
     current_survivors = get_survs()
@@ -452,18 +462,24 @@ def task_id():
         if top is None or (isinstance(top, Survivor) == False and isinstance(top, Rubble) == False):
             completed_survivors.add(survivor_loc)
             continue
+
         if isinstance(top, Rubble):
             if survivor_loc in cleared_rubble:
                 continue
-            try:
-                agents_req = top.agents_required
-            except AttributeError:
-                agents_req =1
 
-            try:
-                energy_req = top.energy_required
-            except AttributeError:
-                energy_req =0
+            if survivor_loc in loc_scan_info:# check shared info first
+                agents_req, energy_req = loc_scan_info[survivor_loc]
+            else:
+                #fallback if not scanned
+                try:
+                    agents_req = top.agents_required
+                except AttributeError:#error handling
+                    agents_req =1
+
+                try:
+                    energy_req = top.energy_required
+                except AttributeError:#error handling
+                    energy_req = 0
 
             tasks.append((survivor_loc, agents_req, energy_req))
         else:
@@ -479,16 +495,25 @@ def agent_coordination():
     messages sent last round, and runs this same plan on that same information. The plan
     comes out identical on every agent, and re-planning each round is the reassigning.
     """
+    global loc_scan_info, previous_assignments, cooldown_round, loc_scan, completed_survivors
 
     my_id = get_id()
     my_loc = get_location()
 
     # Everyone alive sends a status every round, so a silent agent is a dead agent.
     team = {my_id: (Location(last_status[0][0], last_status[0][1]), last_status[1])}
+
+
     for message in read_messages(get_round_number()):
         status = message.message.split(",")
-        if int(status[2]) > 0:
-            team[message.sender_id] = (Location(int(status[0]), int(status[1])), int(status[2]))
+        if len(status) >= 3:
+            sender_x, sender_y, energy_val = int(status[0]), int(status[1]), int(status[2])
+            if energy_val >0:
+                team[message.sender_id] = (Location(sender_x, sender_y), energy_val)
+
+            if len(status) >= 7:#shared info unpack
+                scan_loc = Location(int(status[3]), int(status[4]))
+                loc_scan_info[scan_loc] = (int(status[5]), int(status[6]))
 
     # A task is (dest_loc, agents_required, task_energy), task_id should return a list of these.
     # Until it does, use the top layer of each survivor cell, which every agent can see.
@@ -509,15 +534,13 @@ def agent_coordination():
 
     
 
-    # check previous assignments
-    global previous_assignments
-    global cooldown_round
+    # check previous assignment
     available = list(team)
     available.sort()
 
     locations = get_survs()
 
-    global loc_scan
+
 
     #remove leader for availability
     available.remove(min(team))
@@ -594,7 +617,7 @@ def agent_coordination():
 
     previous_assignments = assignments.copy()
     smallest_id = min(team)
-    global loc_scan_info
+
 
     # doing a drone scan first get the leader
     if (get_id() == smallest_id):
@@ -605,14 +628,29 @@ def agent_coordination():
                 #storing scanning results
                 if loc_scan != []:
                     if get_round_number() == cooldown_round + 1:
-                        loc_scan_info[loc_scan[len(loc_scan) - 1]] = get_cell_info_at(loc_scan[len(loc_scan) - 1])
-                send_status()
+                        scanned_loc = loc_scan[len(loc_scan) - 1]
+                        cell_info = get_cell_info_at(scanned_loc)
+                        top = cell_info.top_layer
+                        try:
+                            agents_req = top.agents_required
+                        except AttributeError:
+                            agents_req = 1
+                        try:
+                            energy_req = top.energy_required
+                        except AttributeError:
+                            energy_req = 0
+
+                        loc_scan_info[scanned_loc] = (agents_req, energy_req)
+                        send_status()
                 return
         
         # go through existing location
         for location in locations:
 
             #if the location isnt already in our drone scan catalogue
+            cell_info = get_cell_info_at(location)
+            if isinstance(cell_info.top_layer, Survivor):#skips scanning already exposed survivors
+                continue
             if location not in loc_scan:
                 # append it and drone scan it, send status and get the round number to calculate cool down
                 loc_scan.append(location)
@@ -695,4 +733,3 @@ def agent_action(dest_loc):
     else:
         move(Direction.CENTER)
         return "moved"
-
